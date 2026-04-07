@@ -1,4 +1,4 @@
-# claude-code-approval-agent
+# meta-agent
 
 A [Claude Code](https://claude.ai/code) `PreToolUse` hook that automatically approves safe tool calls, blocks catastrophic ones, and escalates anything ambiguous to you for review.
 
