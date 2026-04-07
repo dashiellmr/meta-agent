@@ -48,19 +48,6 @@
 
 
 # ---------------------------------------------------------------------------
-# STRICT_PIPE_CHECK
-# Controls how pipes (|) in bash commands are treated.
-#
-#   "true"  (default) — any pipe triggers review. Safest option; you'll be
-#                       asked to approve things like `git log | grep foo`.
-#   "false"           — only pipes directly into shell interpreters
-#                       (bash, sh, zsh, python, etc.) trigger review.
-#                       Allows `git log | head -20` to pass automatically.
-# ---------------------------------------------------------------------------
-# STRICT_PIPE_CHECK="true"
-
-
-# ---------------------------------------------------------------------------
 # ALLOW_NPM_INSTALL
 # Controls whether bare `npm install` (no arguments) is auto-approved.
 #

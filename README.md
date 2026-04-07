@@ -78,7 +78,6 @@ cp approval-agent.conf.example ~/.claude/approval-agent.conf
 | `EXTRA_ALLOW_TOOLS` | `""` | Space-separated tool names to always allow |
 | `EXTRA_ALLOW_PATTERNS` | `()` | Bash array of ERE regex patterns for safe commands |
 | `EXTRA_DENY_PATTERNS` | `()` | Bash array of ERE regex patterns to always deny |
-| `STRICT_PIPE_CHECK` | `"true"` | `"true"` = any `\|` triggers review; `"false"` = only `\| shell` |
 | `ALLOW_NPM_INSTALL` | `"false"` | Auto-approve bare `npm install` (not recommended) |
 
 #### Example: Python + Poetry project
@@ -127,8 +126,8 @@ STRICT_PIPE_CHECK="true"
 | Anything in `EXTRA_DENY_PATTERNS` | User-defined |
 
 ### Bash commands — always escalated (ask)
-- Compound commands (`&&`, `||`, `;`)
-- Piped commands when `STRICT_PIPE_CHECK=true` (default)
+- Subshell expressions (`` ` `` or `$()`) — can't be split reliably
+- Any segment of a compound/piped command that isn't on the allowlist
 - `cp` and `mv` (destination not verified)
 - `chmod` outside the project directory
 - `npm install` (unless `ALLOW_NPM_INSTALL=true`)

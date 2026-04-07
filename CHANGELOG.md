@@ -13,7 +13,9 @@ Initial public release.
 
 ### Security hardening
 - **JSON injection** — `deny`/`ask` use `jq -n --arg` instead of raw string interpolation
-- **Compound command bypass** — compound/piped command check runs _before_ the allowlist, closing `echo x && rm -rf /home`-style bypasses
+- **Compound command bypass** — catastrophic deny patterns run on the full command before splitting, closing `echo x && rm -rf /home`-style bypasses
+- **Smart compound splitting** — `&&`, `||`, `;`, `|` commands are split into segments and each segment validated independently; `npm ci && npm run build` auto-approves, `ls && terraform` escalates only the unknown segment
+- **`STRICT_PIPE_CHECK` removed** — superseded by per-segment validation
 - **`rm -rf` false positive** — deny pattern now requires an explicit `-r` flag; bare `rm /path` no longer triggers a deny
 - **`rm -rf` coverage** — pattern covers `/*`, `~/`, and similar root-adjacent targets
 - **`MultiEdit`** — receives the same project-directory scope check as `Edit`/`Write`

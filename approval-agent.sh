@@ -41,7 +41,6 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${PWD}}"
 EXTRA_ALLOW_TOOLS=""          # space-separated tool names to always allow
 EXTRA_ALLOW_PATTERNS=()       # ERE regex array — additional safe bash patterns
 EXTRA_DENY_PATTERNS=()        # ERE regex array — additional deny patterns
-STRICT_PIPE_CHECK="true"      # "true" = any | triggers review; "false" = only | shell
 ALLOW_NPM_INSTALL="false"     # "true" = auto-approve bare `npm install`
 
 _load_config() {
@@ -118,17 +117,16 @@ fi
 if [[ "$TOOL_NAME" == "Bash" ]]; then
   COMMAND=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
 
-  # 7a. Catastrophic patterns — auto-deny regardless of compoundness
-  #     These are checked first so they can never be snuck past via compound bypass.
+  # 7a. Catastrophic deny patterns — run on the FULL command before any splitting.
+  #     This ensures they cannot be bypassed by embedding them in compound commands.
 
-  # Recursive removal of root/home paths — requires -r flag AND a dangerous target.
-  # Checks separately so neither can be smuggled past via flag ordering.
+  # Recursive removal of root/home paths
   if echo "$COMMAND" | grep -qE '\brm\b.*\s-[a-zA-Z]*r' && \
      echo "$COMMAND" | grep -qE '(^|\s)(/\s*$|/\*|/\s|~/\s*$|~/\s)'; then
     deny "Blocked: recursive removal of root/home paths"
   fi
 
-  # Piping remote content directly into a shell interpreter
+  # Piping remote content into a shell interpreter
   if echo "$COMMAND" | grep -qE '(curl|wget)\b[^|]*\|\s*(bash|sh|zsh|fish|python[0-9.]?|perl|ruby)'; then
     deny "Blocked: piping remote content into a shell interpreter"
   fi
@@ -141,115 +139,135 @@ if [[ "$TOOL_NAME" == "Bash" ]]; then
     deny "Blocked: force push to main/master"
   fi
 
-  # User-defined deny patterns
+  # User-defined deny patterns (also run on full command)
   for _pat in "${EXTRA_DENY_PATTERNS[@]+"${EXTRA_DENY_PATTERNS[@]}"}"; do
     if echo "$COMMAND" | grep -qE "$_pat"; then
       deny "Blocked by custom deny pattern: $_pat"
     fi
   done
 
-  # 7b. Compound command detection — escalate before running the allowlist.
-  #     A compound command can't be safely prefix-matched; require user review.
-  #     (The catastrophic patterns above already handle the worst cases even
-  #     if they appear in compound form.)
-  _compound_pattern='(&&|\|\||;)'
-  _subshell_pattern='(`|\$\()'
+  # 7b. Subshell detection — can't split reliably, escalate.
+  if echo "$COMMAND" | grep -qE '(`|\$\()'; then
+    ask "Subshell command requires review"
+  fi
 
-  if [[ "$STRICT_PIPE_CHECK" == "true" ]]; then
-    # Any pipe triggers review (safest default)
-    if echo "$COMMAND" | grep -qE "$_compound_pattern|${_subshell_pattern}|\|"; then
-      ask "Compound/piped command requires review"
+  # 7c. Single-command classifier — outputs "allow", "ask:<reason>", or "deny:<reason>".
+  #     Does NOT call allow/ask/deny directly so it can be used per-segment below.
+  _classify_simple() {
+    local _c
+    _c=$(printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -z "$_c" ]] && { printf 'allow'; return; }
+
+    # Read-only filesystem commands
+    echo "$_c" | grep -qE '^\s*(ls|cat|head|tail|wc|file|stat|which|echo|pwd|find|grep|rg|tree|du|df|env|printenv)(\s|$)' \
+      && { printf 'allow'; return; }
+
+    # export PATH
+    echo "$_c" | grep -qE '^\s*export\s+PATH=' \
+      && { printf 'allow'; return; }
+
+    # Git read-only subcommands
+    echo "$_c" | grep -qE '^\s*git\s+(status|diff|log|branch|show|remote|tag|stash\s+list|rev-parse|describe|shortlog|name-rev|config\s+--get)(\s|$)' \
+      && { printf 'allow'; return; }
+
+    # npm safe subcommands
+    echo "$_c" | grep -qE '^\s*npm\s+(ci|run|test|run-script|ls|outdated|audit|pack|version)(\s|$)' \
+      && { printf 'allow'; return; }
+    if [[ "$ALLOW_NPM_INSTALL" == "true" ]]; then
+      echo "$_c" | grep -qE '^\s*npm\s+install(\s|$)' \
+        && { printf 'allow'; return; }
     fi
-  else
-    # Only flag pipes into shells (more permissive)
-    if echo "$COMMAND" | grep -qE "$_compound_pattern|${_subshell_pattern}"; then
-      ask "Compound command requires review"
+
+    # npx with known-safe tools
+    echo "$_c" | grep -qE '^\s*npx\s+(tsc|tsx|next|eslint|prettier|jest|vitest|drizzle-kit)(\s|$)' \
+      && { printf 'allow'; return; }
+
+    # node script execution
+    echo "$_c" | grep -qE '^\s*node\s' \
+      && { printf 'allow'; return; }
+
+    # chmod scoped to project directory
+    if echo "$_c" | grep -qE '^\s*chmod\s'; then
+      local _chmod_target
+      _chmod_target=$(echo "$_c" | grep -oE '[^[:space:]]+$')
+      if [[ "$_chmod_target" == "$PROJECT_DIR"* ]]; then
+        printf 'allow'; return
+      else
+        printf 'ask:chmod target may be outside project directory'; return
+      fi
     fi
+
+    # mkdir / touch — generally safe
+    echo "$_c" | grep -qE '^\s*mkdir(\s|$)' && { printf 'allow'; return; }
+    echo "$_c" | grep -qE '^\s*touch\s'      && { printf 'allow'; return; }
+
+    # cp / mv — destination unverified, escalate
+    echo "$_c" | grep -qE '^\s*(cp|mv)\s' \
+      && { printf 'ask:cp/mv requires review (verify source and destination paths)'; return; }
+
+    # Docker read-only subcommands
+    echo "$_c" | grep -qE '^\s*docker\s+(ps|images|logs|inspect|info|version)(\s|$)' \
+      && { printf 'allow'; return; }
+
+    # gh CLI read-only subcommands
+    echo "$_c" | grep -qE '^\s*gh\s+(pr|issue|repo|run)\s+(list|view|status|checks|diff)(\s|$)' \
+      && { printf 'allow'; return; }
+
+    # User-defined allow patterns
+    for _pat in "${EXTRA_ALLOW_PATTERNS[@]+"${EXTRA_ALLOW_PATTERNS[@]}"}"; do
+      echo "$_c" | grep -qE "$_pat" && { printf 'allow'; return; }
+    done
+
+    printf 'ask:Unrecognized bash command requires review'
+  }
+
+  # 7d. Compound / piped command handling.
+  #     Split on operators and validate each segment independently.
+  #     The most restrictive verdict across all segments wins.
+  #
+  #     Splitting uses space-padded operators to reduce false splits inside
+  #     quoted strings — not perfect, but correct for typical agent commands.
+  if echo "$COMMAND" | grep -qE ' (&&|\|\||;|\|) |^(\|\|?|;|&&)| (\|\|?|;|&&)$'; then
+    _worst="allow"
+    _worst_reason=""
+
+    while IFS= read -r _seg; do
+      # Trim whitespace; skip empty segments
+      _seg=$(printf '%s' "$_seg" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      [[ -z "$_seg" ]] && continue
+
+      _verdict=$(_classify_simple "$_seg")
+      _vtype="${_verdict%%:*}"
+      _vreason="${_verdict#*:}"
+
+      if [[ "$_vtype" == "deny" ]]; then
+        _worst="deny"
+        _worst_reason="$_vreason"
+        break
+      elif [[ "$_vtype" == "ask" && "$_worst" != "deny" ]]; then
+        _worst="ask"
+        _worst_reason="$_vreason"
+      fi
+    done < <(printf '%s\n' "$COMMAND" \
+      | sed 's/ || /\n/g' \
+      | sed 's/ && /\n/g' \
+      | sed 's/ | /\n/g'  \
+      | sed 's/; /\n/g')
+
+    case "$_worst" in
+      deny) deny "$_worst_reason" ;;
+      ask)  ask  "$_worst_reason" ;;
+      *)    allow ;;
+    esac
   fi
 
-  # 7c. Simple-command allowlist
-  #     Safe to prefix-match here because compound commands were caught above.
-
-  # Read-only filesystem commands
-  if echo "$COMMAND" | grep -qE '^\s*(ls|cat|head|tail|wc|file|stat|which|echo|pwd|find|grep|rg|tree|du|df|env|printenv)(\s|$)'; then
-    allow
-  fi
-
-  # export PATH (common setup pattern)
-  if echo "$COMMAND" | grep -qE '^\s*export\s+PATH='; then
-    allow
-  fi
-
-  # Git read-only subcommands
-  if echo "$COMMAND" | grep -qE '^\s*git\s+(status|diff|log|branch|show|remote|tag|stash\s+list|rev-parse|describe|shortlog|name-rev|config\s+--get)(\s|$)'; then
-    allow
-  fi
-
-  # npm safe subcommands (not bare install — supply-chain risk)
-  _npm_safe='^\s*npm\s+(ci|run|test|run-script|ls|outdated|audit|pack|version)(\s|$)'
-  if echo "$COMMAND" | grep -qE "$_npm_safe"; then
-    allow
-  fi
-  if [[ "$ALLOW_NPM_INSTALL" == "true" ]]; then
-    if echo "$COMMAND" | grep -qE '^\s*npm\s+install(\s|$)'; then
-      allow
-    fi
-  fi
-
-  # npx with known-safe tools
-  if echo "$COMMAND" | grep -qE '^\s*npx\s+(tsc|tsx|next|eslint|prettier|jest|vitest|drizzle-kit)(\s|$)'; then
-    allow
-  fi
-
-  # node script execution
-  if echo "$COMMAND" | grep -qE '^\s*node\s'; then
-    allow
-  fi
-
-  # chmod scoped to project directory
-  if echo "$COMMAND" | grep -qE '^\s*chmod\s'; then
-    _chmod_target=$(echo "$COMMAND" | grep -oE '[^[:space:]]+$')
-    if [[ "$_chmod_target" == "$PROJECT_DIR"* ]]; then
-      allow
-    else
-      ask "chmod target may be outside project directory"
-    fi
-  fi
-
-  # mkdir — generally safe
-  if echo "$COMMAND" | grep -qE '^\s*mkdir(\s|$)'; then
-    allow
-  fi
-
-  # touch — generally safe
-  if echo "$COMMAND" | grep -qE '^\s*touch\s'; then
-    allow
-  fi
-
-  # cp / mv — escalate; these can move files outside the project
-  if echo "$COMMAND" | grep -qE '^\s*(cp|mv)\s'; then
-    ask "cp/mv requires review (verify source and destination paths)"
-  fi
-
-  # Docker read-only subcommands
-  if echo "$COMMAND" | grep -qE '^\s*docker\s+(ps|images|logs|inspect|info|version)(\s|$)'; then
-    allow
-  fi
-
-  # gh CLI read-only subcommands
-  if echo "$COMMAND" | grep -qE '^\s*gh\s+(pr|issue|repo|run)\s+(list|view|status|checks|diff)(\s|$)'; then
-    allow
-  fi
-
-  # User-defined allow patterns
-  for _pat in "${EXTRA_ALLOW_PATTERNS[@]+"${EXTRA_ALLOW_PATTERNS[@]}"}"; do
-    if echo "$COMMAND" | grep -qE "$_pat"; then
-      allow
-    fi
-  done
-
-  # Everything else — escalate
-  ask "Unrecognized bash command requires review"
+  # 7e. Simple (non-compound) command — classify directly.
+  _verdict=$(_classify_simple "$COMMAND")
+  case "${_verdict%%:*}" in
+    deny) deny "${_verdict#*:}" ;;
+    ask)  ask  "${_verdict#*:}" ;;
+    *)    allow ;;
+  esac
 fi
 
 # ---------------------------------------------------------
