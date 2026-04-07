@@ -1,0 +1,74 @@
+# approval-agent.conf — Configuration for approval-agent.sh
+#
+# This file is sourced as bash. Standard bash variable and array syntax applies.
+#
+# Placement (project-level takes precedence over global):
+#   Global:       ~/.claude/approval-agent.conf
+#   Per-project:  <project-root>/.claude/approval-agent.conf
+#
+# All settings below are shown with their defaults.
+# Uncomment and modify the ones you want to change.
+
+
+# ---------------------------------------------------------------------------
+# EXTRA_ALLOW_TOOLS
+# Space-separated list of additional Claude Code tool names to auto-approve.
+#
+# Example: allow the NotebookEdit tool and a custom MCP tool
+# ---------------------------------------------------------------------------
+# EXTRA_ALLOW_TOOLS="NotebookEdit mcp__my_server__my_tool"
+
+
+# ---------------------------------------------------------------------------
+# EXTRA_ALLOW_PATTERNS
+# Bash array of ERE regex patterns for bash commands to auto-approve.
+# Each pattern is matched against the full command string.
+#
+# Example: allow python3 and poetry commands
+# ---------------------------------------------------------------------------
+# EXTRA_ALLOW_PATTERNS=(
+#   '^\s*python3?\s'
+#   '^\s*poetry\s+(run|install|show|check)(\s|$)'
+#   '^\s*cargo\s+(build|test|check|clippy|fmt)(\s|$)'
+#   '^\s*go\s+(build|test|vet|fmt|mod)(\s|$)'
+# )
+
+
+# ---------------------------------------------------------------------------
+# EXTRA_DENY_PATTERNS
+# Bash array of ERE regex patterns for bash commands to unconditionally deny.
+# Checked before compound-command detection and the allowlist.
+#
+# Example: never allow database drops
+# ---------------------------------------------------------------------------
+# EXTRA_DENY_PATTERNS=(
+#   'DROP\s+(TABLE|DATABASE|SCHEMA)'
+#   'psql.*--command.*DROP'
+# )
+
+
+# ---------------------------------------------------------------------------
+# STRICT_PIPE_CHECK
+# Controls how pipes (|) in bash commands are treated.
+#
+#   "true"  (default) — any pipe triggers review. Safest option; you'll be
+#                       asked to approve things like `git log | grep foo`.
+#   "false"           — only pipes directly into shell interpreters
+#                       (bash, sh, zsh, python, etc.) trigger review.
+#                       Allows `git log | head -20` to pass automatically.
+# ---------------------------------------------------------------------------
+# STRICT_PIPE_CHECK="true"
+
+
+# ---------------------------------------------------------------------------
+# ALLOW_NPM_INSTALL
+# Controls whether bare `npm install` (no arguments) is auto-approved.
+#
+#   "false" (default) — requires review. Protects against supply-chain attacks
+#                       where an agent installs a malicious package.
+#   "true"            — auto-approves `npm install` (still blocks `npm install <pkg>`
+#                       unless you add a pattern to EXTRA_ALLOW_PATTERNS).
+#
+# Note: `npm ci` is always auto-approved (it only installs from the lockfile).
+# ---------------------------------------------------------------------------
+# ALLOW_NPM_INSTALL="false"
