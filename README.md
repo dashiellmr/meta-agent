@@ -88,7 +88,6 @@ EXTRA_ALLOW_PATTERNS=(
   '^\s*python3?\s'
   '^\s*poetry\s+(run|install|show|check)(\s|$)'
 )
-STRICT_PIPE_CHECK="false"   # allow git log | grep foo
 ```
 
 #### Example: Stricter org-wide defaults
@@ -99,7 +98,6 @@ EXTRA_DENY_PATTERNS=(
   'DROP\s+(TABLE|DATABASE|SCHEMA)'
 )
 ALLOW_NPM_INSTALL="false"
-STRICT_PIPE_CHECK="true"
 ```
 
 ## What is and isn't auto-approved
